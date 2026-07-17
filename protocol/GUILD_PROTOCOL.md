@@ -1,125 +1,160 @@
 # Guild AI — Quest Protocol v0.1
-Open protocol for trusted agent-to-agent collaboration.
+Open protocol for trusted agent-to-agent collaboration. Gamified, functional, agent-agnostic.
+
+## The Core Idea
+
+Your agent harness (Hermes, OpenClaw, whatever) connects to a friend's agent harness. You form a **party**. You both type something. Both agents analyze both inputs, then work together on the quest. Think co-op game, not client-server.
+
+No one is the "boss." Everyone contributes.
 
 ## Concepts
 
-- **Guild** — a group of trusted agent harnesses (humans vouch for each other's agents)
-- **Quest** — a unit of work one agent (orchestrator) delegates to another (executor)
-- **Bond** — reputation or micro-payment posted by the quest issuer, released on verified completion
-- **Proof** — verifiable artifact the executor returns (text result, file hash, on-chain tx)
+- **Guild** — a trusted relationship between two or more agent harnesses. Humans vouch for each other.
+- **Party** — a guild that's actively questing together. Members join, contribute, and share rewards.
+- **Quest** — collaborative work. Both agents execute in parallel, both results get merged.
+- **Raid** — a complex quest involving 3+ agents (future).
+- **XP / Reputation** — each completed quest earns reputation. Higher rep = more complex quest access.
+- **Bond** — optional micro-stake both sides post. If either flakes, the other claims it.
+
+## Why Protocol > App
+
+- Any agent harness can implement the protocol — Hermes, OpenClaw, Claude Code, Cursor
+- No vendor lock-in, no platform fees, no central server
+- Your agent talks directly to their agent, peer-to-peer
+- Open source means anyone can extend it (new quest types, new transports)
 
 ## Discovery
 
-Agents discover each other through a mutual human relationship. No global registry.
+Agents discover each other through human trust. No global registry, no blockchain, no token.
 
-- Alice adds Bob's agent via peer-bridge address or a signed handshake
-- Each agent publishes a capability manifest (what quest types it accepts)
-- Manifests are cached locally, refreshed on request
+- Human adds friend's agent via peer-bridge address, nostr pubkey, or direct handshake
+- Each agent publishes a capability manifest so the other knows what it can do
+- Manifests are cached locally, refreshed on demand
 
-Capability manifest structure:
+Capability manifest:
 ```json
 {
   "agent": "nyra_ops",
+  "harness": "hermes",
   "version": "0.1",
-  "accepts": ["research", "analysis", "audit", "signal"],
+  "accepts": ["research", "analysis", "audit", "signal", "code_review"],
   "max_quest_duration": 3600,
-  "pricing": {"research": "0.0001_base", "audit": "free"},
   "public_key": "0x..."
 }
 ```
 
-## Quest Lifecycle
+## Quest Lifecycle (Collaborative)
 
 ```
-PUBLISH → BID/ACCEPT → EXECUTE → VERIFY → SETTLE
+FORM PARTY → SHARED INPUT → PARALLEL EXECUTION → MERGE → SETTLE
 ```
 
-### 1. PUBLISH (orchestrator → guild)
-```json
-{
-  "type": "quest.publish",
-  "id": "q_abc123",
-  "title": "Research SOL weekend gap patterns",
-  "description": "Analyze SOLUSD weekend volatility for last 8 weekends. Return structured data.",
-  "reward": "0.0005_ETH",
-  "bond": "0.0001_ETH",
-  "max_duration": 1800,
-  "required_capabilities": ["research"],
-  "schema": {"type": "json", "fields": ["date", "gap_pct", "recovery_time_hours"]}
-}
+### 1. FORM PARTY
+Either agent sends a party invite. The other accepts.
+
+```
+Agent A → Agent B: "Want to quest on 'DeFi trends'?"
+Agent B → Agent A: "Accepted. My capabilities: research, analysis."
+Party formed. Both humans now aware.
 ```
 
-### 2. ACCEPT (executor → orchestrator)
-```json
-{
-  "type": "quest.accept",
-  "quest_id": "q_abc123",
-  "agent": "hermessol",
-  "estimated_delivery": 1200,
-  "bond_tx": "0x..."  // counterparty bond posted
-}
+### 2. SHARED INPUT
+Both humans contribute. Each agent analyzes its human's input.
+
+```
+Human A types: "I want to research Solana DeFi protocols"
+Human B types: "Focus on lending protocols, compare yields"
+Agent A: analyzes Human A's intent
+Agent B: analyzes Human B's intent
+Both agents share their analysis with each other
 ```
 
-### 3. EXECUTE (executor → orchestrator, via heartbeat)
-```json
-{
-  "type": "quest.heartbeat",
-  "quest_id": "q_abc123",
-  "status": "in_progress",
-  "progress_pct": 45,
-  "message": "Fetched OHLCV data, running analysis..."
-}
+### 3. PARALLEL EXECUTION
+Both agents work simultaneously. Each sends progress heartbeats.
+
+```
+Agent A: researching Solana DeFi landscape → heartbeat at 40%
+Agent B: comparing lending protocol yields → heartbeat at 60%
+Agent A: heartbeat at 80% — found 12 protocols
+Agent B: heartbeat at 100% — narrowed to 5 with yield data
 ```
 
-### 4. DELIVER (executor → orchestrator)
-```json
-{
-  "type": "quest.deliver",
-  "quest_id": "q_abc123",
-  "result": {
-    "data": [...],
-    "summary": "Average weekend gap: 4.2%. Recovery within 6h in 6/8 cases.",
-    "proof_hash": "sha256:abc..."
-  }
-}
+### 4. MERGE
+Results are merged. If both agents agree, quest is complete. If there's conflict, humans review.
+
+```
+Agent A delivers: "12 Solana DeFi protocols identified"
+Agent B delivers: "5 lending protocols with yield comparison"
+Merged result: "5 lending protocols with yields, ranked by TVL + APY"
 ```
 
-### 5. VERIFY (orchestrator → automatic or manual)
-- If result matches the requested schema → auto-accept
-- If schema violation or timeout → bond forfeits to executor (wasted time) or back to issuer (failed delivery)
-- Human can override within 24h
+### 5. SETTLE
+Reputation updated. Bonds returned. Quest logged to history.
 
-### 6. SETTLE (automated)
-- If accepted: reward + bond released to executor
-- If rejected: bond returned to issuer
-- Settlement via x402 microtransaction or signed receipt
+## Message Types
 
-## Transport
+All messages are JSON. Transport is pluggable (file-based for local, peer-bridge for remote, nostr for decentralized).
 
-Transport-agnostic. First implementation uses **peer-bridge** (filesystem JSON inbox/outbox). Each message is a JSON file written to `~/.hermes/peer/guild/inbox/` and `outbox/`.
+| Type | Purpose | From |
+|------|---------|------|
+| `guild.invite` | Invite another agent to form a party | Any agent |
+| `guild.accept` | Accept the invite | Invited agent |
+| `guild.decline` | Decline the invite | Invited agent |
+| `quest.publish` | Propose a quest to the party | Any party member |
+| `quest.accept` | Accept the quest | Other party members |
+| `quest.heartbeat` | Progress update during execution | Working agent |
+| `quest.deliver` | Deliver partial or full result | Working agent |
+| `quest.merge` | Merge results from multiple agents | Lead agent |
+| `quest.settle` | Finalize quest, update reputation | Any party member |
+| `quest.error` | Something went wrong | Any party member |
 
-Future transports: nostr, direct gRPC, on-chain events.
+## Security
 
-## Trust Model
+1. No code execution from quest payloads — results are data, not scripts
+2. No credential sharing — each agent uses its own API keys
+3. Bond amounts are pain-threshold-sized (small enough to risk, large enough to prevent spam)
+4. Heartbeat timeout = quest failed gracefully
+5. Humans can override any automated decision within 24h
 
-- **Identity:** agents are identified by their human's keypair or wallet
-- **Verification:** counterparty verification via stillos-kya or similar
-- **Reputation:** each completed quest updates a local trust score (0-100)
-- **Bond:** optional micro-payment that both sides stake. If either party cheats, the other claims it.
+## Built-in Quest Types
 
-## Security Rules
+### Research
+Both agents research a topic. Each brings independent sources. Results merged into a single report with provenance tracking.
 
-1. Never execute untrusted code from a quest payload
-2. Never share API keys or credentials
-3. Quest results are content — verify schema, don't eval
-4. Bond amounts should be below the human's pain threshold
-5. Heartbeat timeout (no message for 2x max_duration) = quest failed
+### Analysis  
+Both agents analyze the same data independently. Compare conclusions. Flag disagreements for human review.
 
-## First Implementation
+### Audit
+Both agents review the same code/system. Cross-check findings. Produce a unified audit report.
 
-Three files:
-- `guild_agent.py` — the agent-side handler (read quests, respond, execute)
-- `guild_orchestrator.py` — publish quests, verify results, settle
-- `guild_schema.py` — message type definitions and validation
+## Transport Layer
 
-Built on top of existing peer-bridge transport. First quest type: **research** (agent receives a question, does research, returns structured answer).
+Pluggable. Three implementations planned:
+
+1. **Local** — file-based inbox/outbox (for dev, testing, same-machine)
+2. **Peer Bridge** — webhook-based (for Hermes agents on different machines, production)
+3. **Nostr** — decentralized relay-based (for any agent, anywhere)
+
+All transports carry the same JSON messages. Switching transport doesn't change the protocol.
+
+## Running a Guild
+
+```
+# Two terminals, one machine (dev)
+guild listen --agent alice --capabilities research
+guild listen --agent bob --capabilities analysis
+
+# Alice invites Bob
+guild invite bob --quest "Research SOL weekend patterns"
+
+# Two Hermes agents, two houses (production)
+# Peer-bridge handles transport automatically
+# guild_hermes.py handles quest lifecycle
+```
+
+## What's Next
+
+- Raid protocol (3+ agent quests)
+- Reputation scoring system
+- Quest templates (save/replay common quest types)
+- Web UI for humans to monitor active quests
