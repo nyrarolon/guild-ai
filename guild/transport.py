@@ -26,6 +26,11 @@ DEFAULT_BASE = Path.home() / ".hermes" / "peer" / "guild"
 INBOX_DIR = DEFAULT_BASE / "inbox"
 OUTBOX_DIR = DEFAULT_BASE / "outbox"
 
+# ── Peer Bridge defaults ───────────────────────────────────────────────────────
+
+PEER_INBOX_FILE = Path.home() / ".hermes" / "peer" / "inbox.json"
+PEER_SEND_SCRIPT = Path.home() / ".hermes" / "scripts" / "peer_bridge" / "send.py"
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -234,3 +239,128 @@ def mark_read(message_path: str) -> None:
         logger.debug("Marked message as read: %s → %s", src.name, processed_name)
     except OSError as exc:
         logger.error("Failed to move %s to %s: %s", src, dst, exc)
+
+
+# ── Peer Bridge Transport ──────────────────────────────────────────────────
+
+
+class PeerBridgeTransport:
+    """Transport that sends/receives Guild AI messages over the Hermes
+    peer-bridge webhook. Designed for cross-machine agent-to-agent quests.
+
+    This is the transport Hermes agents use in production. The file-based
+    transport (send_message / poll_inbox above) is the reference implementation
+    for local dev and open-source users.
+
+    Usage::
+
+        t = PeerBridgeTransport(agent_id="nyra")
+        t.send_message("friend_agent", quest_dict)
+        msgs = t.poll_inbox()
+    """
+
+    def __init__(
+        self,
+        agent_id: str,
+        inbox_file: str | Path | None = None,
+        send_script: str | Path | None = None,
+    ):
+        self.agent_id = agent_id
+        self.inbox_file = Path(inbox_file or PEER_INBOX_FILE)
+        self.send_script = Path(send_script or PEER_SEND_SCRIPT)
+        self._pending: list[dict[str, Any]] = []
+
+    def send_message(self, recipient_id: str, message: dict[str, Any]) -> bool:
+        """Send a guild message to a peer agent via the peer-bridge webhook.
+
+        The message is wrapped with a ``guild:`` prefix topic so the receiving
+        agent can route it to the Guild AI handler.
+        """
+        import subprocess, json
+
+        payload = json.dumps(message)
+        try:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(self.send_script),
+                    "--topic",
+                    "guild",
+                    "--context",
+                    f"quest from {self.agent_id}",
+                    payload,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if result.returncode == 0:
+                logger.info(
+                    "Sent guild message to '%s' via peer-bridge", recipient_id
+                )
+                return True
+            logger.error(
+                "peer-bridge send failed (exit %d): %s",
+                result.returncode,
+                result.stderr.strip() or result.stdout.strip(),
+            )
+            return False
+        except Exception as exc:
+            logger.error("peer-bridge send exception: %s", exc)
+            return False
+
+    def poll_inbox(self, agent_id: str | None = None) -> list[dict[str, Any]]:
+        """Read unprocessed guild messages from the peer-bridge inbox.
+
+        Filters for messages where ``topic == \"guild\"``.
+        """
+        import json
+
+        if not self.inbox_file.is_file():
+            return []
+
+        try:
+            with open(self.inbox_file) as f:
+                all_messages: list[dict[str, Any]] = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to read peer inbox: %s", exc)
+            return []
+
+        guild_msgs = [
+            m for m in all_messages
+            if m.get("topic") == "guild" and not m.get("read", False)
+        ]
+        # Cache so we can mark them read later
+        self._pending = guild_msgs
+        return guild_msgs
+
+    def mark_read(self, message_ids: list[str] | None = None) -> None:
+        """Mark guild messages as read in the peer-bridge inbox."""
+        import json
+
+        if not self.inbox_file.is_file():
+            return
+
+        try:
+            with open(self.inbox_file) as f:
+                all_messages: list[dict[str, Any]] = json.load(f)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to update peer inbox: %s", exc)
+            return
+
+        msg_ids = set(message_ids or [])
+        changed = False
+        for m in all_messages:
+            if m.get("topic") != "guild":
+                continue
+            if not msg_ids or m.get("id") in msg_ids:
+                m["read"] = True
+                changed = True
+
+        if changed:
+            try:
+                with open(self.inbox_file, "w") as f:
+                    json.dump(all_messages, f, indent=2)
+                self._pending = []
+            except OSError as exc:
+                logger.error("Failed to write peer inbox: %s", exc)
